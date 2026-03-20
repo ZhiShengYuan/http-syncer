@@ -25,6 +25,7 @@ import (
 type Config struct {
 	ServerURL           string
 	Token               string
+	UserAgent           string
 	Module              string
 	SourcePath          string
 	TargetDir           string
@@ -42,6 +43,8 @@ type Config struct {
 	plog                *processLogger
 }
 
+const defaultUserAgent = "go-sync/1.0"
+
 type Result struct {
 	Downloaded int
 	Deleted    int
@@ -51,6 +54,9 @@ type Result struct {
 }
 
 func Run(ctx context.Context, cfg Config) (*Result, error) {
+	if strings.TrimSpace(cfg.UserAgent) == "" {
+		cfg.UserAgent = defaultUserAgent
+	}
 	plog, err := newProcessLogger(cfg.ProcessLogPath, cfg.Debug)
 	if err != nil {
 		return nil, err
@@ -202,6 +208,7 @@ func createSessionOnce(ctx context.Context, hc *http.Client, cfg Config, createB
 	if cfg.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	}
+	req.Header.Set("User-Agent", cfg.UserAgent)
 	resp, err := hc.Do(req)
 	if err != nil {
 		return false, err
@@ -233,6 +240,7 @@ func waitForUnlockWS(ctx context.Context, cfg Config, module string) error {
 	if cfg.Token != "" {
 		headers.Set("Authorization", "Bearer "+cfg.Token)
 	}
+	headers.Set("User-Agent", cfg.UserAgent)
 	conn, _, err := dialer.DialContext(ctx, wsURL, headers)
 	if err != nil {
 		return err
@@ -269,6 +277,7 @@ func fetchManifest(ctx context.Context, hc *http.Client, cfg Config, snapshotID 
 		if cfg.Token != "" {
 			req.Header.Set("Authorization", "Bearer "+cfg.Token)
 		}
+		req.Header.Set("User-Agent", cfg.UserAgent)
 		resp, err := hc.Do(req)
 		if err != nil {
 			return nil, err
@@ -377,6 +386,7 @@ func downloadAndPromote(ctx context.Context, hc *http.Client, cfg Config, snapsh
 	if cfg.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	}
+	req.Header.Set("User-Agent", cfg.UserAgent)
 	if offset > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
@@ -460,6 +470,7 @@ func commitSession(ctx context.Context, hc *http.Client, cfg Config, res Result)
 	if cfg.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.Token)
 	}
+	req.Header.Set("User-Agent", cfg.UserAgent)
 	resp, err := hc.Do(req)
 	if err != nil {
 		return err

@@ -22,6 +22,7 @@ func main() {
 	var (
 		serverURL           = flag.String("server", "http://127.0.0.1:8080", "sync server URL")
 		token               = flag.String("token", "", "bearer token")
+		userAgent           = flag.String("user-agent", "go-sync/1.0", "HTTP User-Agent sent to server")
 		module              = flag.String("module", "", "module name on server (required)")
 		sourcePath          = flag.String("source", ".", "source path on server")
 		targetDir           = flag.String("target", "./mirror", "local mirror target directory")
@@ -43,6 +44,7 @@ func main() {
 	res, err := client.Run(ctx, client.Config{
 		ServerURL:           *serverURL,
 		Token:               *token,
+		UserAgent:           *userAgent,
 		Module:              *module,
 		SourcePath:          *sourcePath,
 		TargetDir:           *targetDir,

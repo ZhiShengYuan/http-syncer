@@ -144,6 +144,7 @@ go run ./cmd/sync-client \
 
 - `-server`：服务端地址，默认 `http://127.0.0.1:8080`
 - `-token`：Bearer token
+- `-user-agent`：客户端请求 UA，默认 `go-sync/1.0`
 - `-module`：模块名（必填）
 - `-source`：模块内源路径，默认 `.`
 - `-target`：本地镜像目录
