@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync-http/internal/common"
 	"sync-http/internal/filter"
 	"time"
@@ -39,6 +40,7 @@ type Config struct {
 	ForceDeleteGuard    bool
 	DryRun              bool
 	PageSize            int
+	DownloadConcurrency int
 	Backoffs            []time.Duration
 	plog                *processLogger
 }
@@ -66,6 +68,9 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 
 	if len(cfg.Backoffs) == 0 {
 		cfg.Backoffs = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
+	}
+	if cfg.DownloadConcurrency <= 0 {
+		cfg.DownloadConcurrency = 8
 	}
 	if cfg.PageSize <= 0 {
 		cfg.PageSize = 5000
@@ -150,7 +155,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		}
 	}
 	sort.Strings(toDelete)
-	cfg.plog.Infof("plan download=%d delete=%d", len(toDownload), len(toDelete))
+	cfg.plog.Infof("plan download=%d delete=%d concurrency=%d", len(toDownload), len(toDelete), cfg.DownloadConcurrency)
 
 	if err := enforceDeleteGuard(cfg, len(local), len(toDelete)); err != nil {
 		cfg.plog.Debugf("delete guard error: %v", err)
@@ -163,18 +168,17 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		return nil, err
 	}
 
-	for _, e := range toDownload {
-		if cfg.DryRun {
+	if cfg.DryRun {
+		for _, e := range toDownload {
 			cfg.plog.Debugf("dry run skip download path=%s", e.Path)
-			continue
 		}
-		cfg.plog.Debugf("download path=%s", e.Path)
-		written, err := downloadAndPromote(ctx, hc, cfg, sresp.SnapshotID, e, staging)
+	} else {
+		downloaded, bytesWritten, err := downloadAll(ctx, hc, cfg, sresp.SnapshotID, toDownload, staging)
 		if err != nil {
 			return nil, err
 		}
-		res.Downloaded++
-		res.Bytes += written
+		res.Downloaded += downloaded
+		res.Bytes += bytesWritten
 	}
 
 	for _, p := range toDelete {
@@ -361,6 +365,61 @@ func enforceDeleteGuard(cfg Config, totalLocal int, plannedDeletes int) error {
 		return fmt.Errorf("delete guard triggered: planned=%d total=%d ratio=%.4f threshold=%.4f", plannedDeletes, totalLocal, ratio, cfg.DeleteGuardRatio)
 	}
 	return nil
+}
+
+func downloadAll(ctx context.Context, hc *http.Client, cfg Config, snapshotID string, entries []common.ManifestEntry, staging string) (int, int64, error) {
+	if len(entries) == 0 {
+		return 0, 0, nil
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	sem := make(chan struct{}, cfg.DownloadConcurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+	var downloaded int
+	var bytesWritten int64
+
+	setErr := func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if firstErr == nil {
+			firstErr = err
+			cancel()
+		}
+	}
+
+	for _, e := range entries {
+		if ctx.Err() != nil {
+			break
+		}
+		sem <- struct{}{}
+		entry := e
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			cfg.plog.Debugf("download path=%s", entry.Path)
+			written, err := downloadAndPromote(ctx, hc, cfg, snapshotID, entry, staging)
+			if err != nil {
+				setErr(err)
+				return
+			}
+			mu.Lock()
+			downloaded++
+			bytesWritten += written
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if firstErr != nil {
+		return downloaded, bytesWritten, firstErr
+	}
+	return downloaded, bytesWritten, nil
 }
 
 func downloadAndPromote(ctx context.Context, hc *http.Client, cfg Config, snapshotID string, entry common.ManifestEntry, staging string) (int64, error) {

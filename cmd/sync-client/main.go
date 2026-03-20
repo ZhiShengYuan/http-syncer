@@ -34,6 +34,7 @@ func main() {
 		forceDeleteGuard    = flag.Bool("force-delete-guard", false, "override delete guard")
 		dryRun              = flag.Bool("dry-run", false, "plan only, no writes")
 		pageSize            = flag.Int("page-size", 5000, "manifest page size")
+		downloadConcurrency = flag.Int("download-concurrency", 8, "number of concurrent file downloads")
 	)
 	var exGlobs, exRegex stringList
 	flag.Var(&exGlobs, "exclude-glob", "exclude glob pattern (repeatable)")
@@ -58,6 +59,7 @@ func main() {
 		ForceDeleteGuard:    *forceDeleteGuard,
 		DryRun:              *dryRun,
 		PageSize:            *pageSize,
+		DownloadConcurrency: *downloadConcurrency,
 		Backoffs:            []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second},
 	})
 	if err != nil {

@@ -159,6 +159,7 @@ go run ./cmd/sync-client \
 - `-force-delete-guard`：强制跳过删除保护
 - `-dry-run`：仅规划，不写盘
 - `-page-size`：清单分页大小，默认 `5000`
+- `-download-concurrency`：并发下载数，默认 `8`
 
 服务端参数补充（`cmd/sync-server`）：
 
