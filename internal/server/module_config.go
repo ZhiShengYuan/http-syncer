@@ -12,13 +12,16 @@ import (
 
 type FileConfig struct {
 	Server struct {
-		RootDir            string `yaml:"root_dir"`
-		LockDir            string `yaml:"lock_dir"`
-		AuditDir           string `yaml:"audit_dir"`
-		AuditRetentionDays int    `yaml:"audit_retention_days"`
-		PageSize           int    `yaml:"page_size"`
-		LockTTL            string `yaml:"lock_ttl"`
-		SnapshotTTL        string `yaml:"snapshot_ttl"`
+		RootDir            string   `yaml:"root_dir"`
+		ListenAddr         string   `yaml:"listen_addr"`
+		ListenPort         int      `yaml:"listen_port"`
+		TrustedProxies     []string `yaml:"trusted_proxies"`
+		LockDir            string   `yaml:"lock_dir"`
+		AuditDir           string   `yaml:"audit_dir"`
+		AuditRetentionDays int      `yaml:"audit_retention_days"`
+		PageSize           int      `yaml:"page_size"`
+		LockTTL            string   `yaml:"lock_ttl"`
+		SnapshotTTL        string   `yaml:"snapshot_ttl"`
 	} `yaml:"server"`
 	Modules []ModuleYAML `yaml:"modules"`
 }
@@ -50,6 +53,15 @@ func LoadFileConfig(path string) (*Config, error) {
 	rootDir, err := filepath.Abs(fc.Server.RootDir)
 	if err != nil {
 		return nil, err
+	}
+
+	listenAddr := strings.TrimSpace(fc.Server.ListenAddr)
+	if listenAddr == "" {
+		listenAddr = "0.0.0.0"
+	}
+	listenPort := fc.Server.ListenPort
+	if listenPort <= 0 {
+		listenPort = 8080
 	}
 
 	lockDir := fc.Server.LockDir
@@ -126,6 +138,9 @@ func LoadFileConfig(path string) (*Config, error) {
 
 	return &Config{
 		RootDir:            rootDir,
+		ListenAddr:         listenAddr,
+		ListenPort:         listenPort,
+		TrustedProxies:     fc.Server.TrustedProxies,
 		LockDir:            lockDir,
 		LockTTL:            lockTTL,
 		PageSize:           pageSize,

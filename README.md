@@ -14,6 +14,7 @@
 - 断点续传（HTTP Range）
 - 保留文件 `mode` 与 `mtime`
 - 审计日志（JSONL，按天滚动，保留 30 天）
+- 可配置监听地址/端口与可信代理（trusted proxy）
 
 ---
 
@@ -41,6 +42,11 @@
 ```yaml
 server:
   root_dir: /data/upstream
+  listen_addr: 0.0.0.0
+  listen_port: 8080
+  trusted_proxies:
+    - 127.0.0.1
+    - 10.0.0.0/8
   lock_dir: /var/lib/sync-http/locks
   audit_dir: /var/log/sync-http/audit
   audit_retention_days: 30
@@ -68,7 +74,18 @@ modules:
 ### 2.2 启动服务端
 
 ```bash
-go run ./cmd/sync-server -config ./server.yaml -listen :8080
+go run ./cmd/sync-server -config ./server.yaml
+```
+
+也可以命令行覆盖监听与可信代理：
+
+```bash
+go run ./cmd/sync-server \
+  -config ./server.yaml \
+  -listen-addr 0.0.0.0 \
+  -listen-port 8080 \
+  -trusted-proxy 127.0.0.1 \
+  -trusted-proxy 10.0.0.0/8
 ```
 
 ### 2.3 执行一次客户端同步
@@ -92,6 +109,9 @@ go run ./cmd/sync-client \
 
 - `server.root_dir`（必填）
 - `server.lock_dir`（可选，默认 `.sync-locks`）
+- `server.listen_addr`（可选，默认 `0.0.0.0`）
+- `server.listen_port`（可选，默认 `8080`）
+- `server.trusted_proxies`（可选，IP/CIDR 列表）
 - `server.audit_dir`（可选，默认 `./audit`）
 - `server.audit_retention_days`（可选，默认 `30`）
 - `server.page_size`（可选，默认 `5000`）
@@ -130,6 +150,13 @@ go run ./cmd/sync-client \
 - `-force-delete-guard`：强制跳过删除保护
 - `-dry-run`：仅规划，不写盘
 - `-page-size`：清单分页大小，默认 `5000`
+
+服务端参数补充（`cmd/sync-server`）：
+
+- `-listen`：完整监听地址（如 `0.0.0.0:8080`），优先级高于 addr/port
+- `-listen-addr`：覆盖配置中的监听地址
+- `-listen-port`：覆盖配置中的监听端口
+- `-trusted-proxy`：覆盖配置中的可信代理（可重复）
 
 ---
 
@@ -311,6 +338,11 @@ curl --http1.1 -i -N \
 - 对 token 做最小权限划分（按模块/按用途拆分）
 - 开启 HTTPS（反向代理）避免明文传输
 - 定期轮换 token 并结合审计日志追踪调用方
+
+可信代理说明：
+
+- 仅当请求来源 IP 命中 `trusted_proxies` 时，服务端才信任 `X-Forwarded-For` / `X-Real-IP`
+- 否则忽略代理头，使用直接连接的 `RemoteAddr`
 
 注意：当前示例使用明文 HTTP。生产环境建议：
 

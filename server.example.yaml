@@ -1,5 +1,10 @@
 server:
   root_dir: /data/upstream
+  listen_addr: 0.0.0.0
+  listen_port: 8080
+  trusted_proxies:
+    - 127.0.0.1
+    - 10.0.0.0/8
   lock_dir: /var/lib/sync-http/locks
   audit_dir: /var/log/sync-http/audit
   audit_retention_days: 30

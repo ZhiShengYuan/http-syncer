@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -176,5 +177,36 @@ func TestModuleLockIsolation(t *testing.T) {
 	resp2.Body.Close()
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("expected mod2 unaffected, got %d", resp2.StatusCode)
+	}
+}
+
+func TestRequestClientIPTrustedProxy(t *testing.T) {
+	svc, _ := testServiceWithModules(t)
+	svc.trusted = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/healthz", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-Forwarded-For", "198.51.100.10, 127.0.0.1")
+	ip := svc.requestClientIP(req)
+	if ip != "198.51.100.10" {
+		t.Fatalf("expected forwarded client ip, got %s", ip)
+	}
+}
+
+func TestRequestClientIPUntrustedProxy(t *testing.T) {
+	svc, _ := testServiceWithModules(t)
+	svc.trusted = []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/healthz", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-Forwarded-For", "198.51.100.10")
+	ip := svc.requestClientIP(req)
+	if ip != "127.0.0.1" {
+		t.Fatalf("expected remote addr ip, got %s", ip)
+	}
+}
+
+func TestParseTrustedProxiesInvalid(t *testing.T) {
+	_, err := parseTrustedProxies([]string{"not-an-ip"})
+	if err == nil {
+		t.Fatal("expected parse error")
 	}
 }

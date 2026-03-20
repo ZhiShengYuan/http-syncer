@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -21,6 +23,9 @@ import (
 
 type Config struct {
 	RootDir            string
+	ListenAddr         string
+	ListenPort         int
+	TrustedProxies     []string
 	LockDir            string
 	LockTTL            time.Duration
 	PageSize           int
@@ -38,6 +43,7 @@ type Service struct {
 	snapshots map[string]*Snapshot
 	sessions  map[string]*Session
 	upgrader  websocket.Upgrader
+	trusted   []netip.Prefix
 }
 
 type Session struct {
@@ -66,12 +72,23 @@ func New(cfg Config) (*Service, error) {
 	if cfg.LockDir == "" {
 		cfg.LockDir = ".sync-locks"
 	}
+	if cfg.ListenAddr == "" {
+		cfg.ListenAddr = "0.0.0.0"
+	}
+	if cfg.ListenPort <= 0 {
+		cfg.ListenPort = 8080
+	}
 	if cfg.AuditDir == "" {
 		cfg.AuditDir = "./audit"
 	}
 	if len(cfg.Modules) == 0 {
 		return nil, fmt.Errorf("no modules configured")
 	}
+	trusted, err := parseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return nil, err
+	}
+
 	lm, err := lock.NewManager(cfg.LockDir)
 	if err != nil {
 		return nil, err
@@ -89,7 +106,76 @@ func New(cfg Config) (*Service, error) {
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(_ *http.Request) bool { return true },
 		},
+		trusted: trusted,
 	}, nil
+}
+
+func parseTrustedProxies(entries []string) ([]netip.Prefix, error) {
+	out := make([]netip.Prefix, 0, len(entries))
+	for _, raw := range entries {
+		v := strings.TrimSpace(raw)
+		if v == "" {
+			continue
+		}
+		if strings.Contains(v, "/") {
+			p, err := netip.ParsePrefix(v)
+			if err != nil {
+				return nil, fmt.Errorf("invalid trusted proxy %q: %w", v, err)
+			}
+			out = append(out, p.Masked())
+			continue
+		}
+		ip, err := netip.ParseAddr(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid trusted proxy %q: %w", v, err)
+		}
+		bits := 32
+		if ip.Is6() {
+			bits = 128
+		}
+		out = append(out, netip.PrefixFrom(ip, bits))
+	}
+	return out, nil
+}
+
+func (s *Service) requestClientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	remoteIP, err := netip.ParseAddr(strings.TrimSpace(host))
+	if err != nil {
+		return ""
+	}
+	if !s.isTrustedProxy(remoteIP) {
+		return remoteIP.String()
+	}
+	xff := r.Header.Get("X-Forwarded-For")
+	if xff != "" {
+		parts := strings.Split(xff, ",")
+		for _, p := range parts {
+			ip, err := netip.ParseAddr(strings.TrimSpace(p))
+			if err == nil {
+				return ip.String()
+			}
+		}
+	}
+	xri := strings.TrimSpace(r.Header.Get("X-Real-IP"))
+	if xri != "" {
+		if ip, err := netip.ParseAddr(xri); err == nil {
+			return ip.String()
+		}
+	}
+	return remoteIP.String()
+}
+
+func (s *Service) isTrustedProxy(ip netip.Addr) bool {
+	for _, p := range s.trusted {
+		if p.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) Handler() http.Handler {
@@ -168,7 +254,7 @@ func (s *Service) handleLock(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.logEvent("lock_acquired", body.Module, "", body.Owner)
+	s.logEvent(r, "lock_acquired", body.Module, "", body.Owner)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -195,7 +281,7 @@ func (s *Service) handleUnlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.locks.Release("module:"+body.Module, body.Owner)
-	s.logEvent("lock_released", body.Module, "", body.Owner)
+	s.logEvent(r, "lock_released", body.Module, "", body.Owner)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -219,23 +305,23 @@ func (s *Service) handleLockWaitWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	s.logEvent("ws_wait_start", module, "", "")
+	s.logEvent(r, "ws_wait_start", module, "", "")
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		locked, owner := s.locks.IsLocked("module:" + module)
 		if !locked {
 			_ = conn.WriteJSON(map[string]string{"event": "unlocked", "module": module})
-			s.logEvent("ws_wait_unlocked", module, "", "")
+			s.logEvent(r, "ws_wait_unlocked", module, "", "")
 			return
 		}
 		if err := conn.WriteJSON(map[string]string{"event": "locked", "module": module, "owner": owner}); err != nil {
-			s.logEvent("ws_wait_disconnect", module, "", "")
+			s.logEvent(r, "ws_wait_disconnect", module, "", "")
 			return
 		}
 		select {
 		case <-r.Context().Done():
-			s.logEvent("ws_wait_context_done", module, "", "")
+			s.logEvent(r, "ws_wait_context_done", module, "", "")
 			return
 		case <-ticker.C:
 		}
@@ -266,7 +352,7 @@ func (s *Service) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusLocked)
 		_ = json.NewEncoder(w).Encode(common.SessionCreateResponse{Status: "locked", Message: "locked by " + owner, RetryAfter: 1})
-		s.logEvent("session_locked", req.Module, "", owner)
+		s.logEvent(r, "session_locked", req.Module, "", owner)
 		return
 	}
 
@@ -317,7 +403,7 @@ func (s *Service) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 		Status:      "ready",
 		ManifestURL: "/v1/snapshots/" + snapshotID + "/manifest",
 	})
-	s.logEvent("session_created", req.Module, sid, "")
+	s.logEvent(r, "session_created", req.Module, sid, "")
 }
 
 func (s *Service) handleManifest(w http.ResponseWriter, r *http.Request) {
@@ -468,7 +554,7 @@ func (s *Service) handleSessionCommit(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(common.SessionCommitResponse{Status: "ok"})
-	s.logEvent("session_committed", sess.Module, sid, "")
+	s.logEvent(r, "session_committed", sess.Module, sid, "")
 }
 
 func (s *Service) cleanupExpiredLocked() {
@@ -492,7 +578,11 @@ func (s *Service) moduleForSnapshot(snapshotID string) (string, error) {
 	return "", fmt.Errorf("unknown snapshot")
 }
 
-func (s *Service) logEvent(event, module, sessionID, owner string) {
+func (s *Service) logEvent(r *http.Request, event, module, sessionID, owner string) {
+	clientIP := ""
+	if r != nil {
+		clientIP = s.requestClientIP(r)
+	}
 	line := fmt.Sprintf("event=%s module=%s session=%s owner=%s", event, module, sessionID, owner)
 	fmt.Println(line)
 	s.audit.Write(map[string]any{
@@ -500,5 +590,6 @@ func (s *Service) logEvent(event, module, sessionID, owner string) {
 		"module":     module,
 		"session_id": sessionID,
 		"owner":      owner,
+		"client_ip":  clientIP,
 	})
 }
