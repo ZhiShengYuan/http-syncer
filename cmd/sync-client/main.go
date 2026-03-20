@@ -26,6 +26,8 @@ func main() {
 		sourcePath          = flag.String("source", ".", "source path on server")
 		targetDir           = flag.String("target", "./mirror", "local mirror target directory")
 		clientID            = flag.String("client-id", "sync-client", "client id")
+		debug               = flag.Bool("debug", false, "enable debug-level client logs")
+		processLog          = flag.String("process-log", "", "client process log file path (default stdout)")
 		deleteGuardRatio    = flag.Float64("delete-guard-ratio", 0.10, "abort when delete ratio exceeds this")
 		deleteGuardMinFiles = flag.Int("delete-guard-min-files", 1000, "enable delete guard only when local files >= this")
 		forceDeleteGuard    = flag.Bool("force-delete-guard", false, "override delete guard")
@@ -45,6 +47,8 @@ func main() {
 		SourcePath:          *sourcePath,
 		TargetDir:           *targetDir,
 		ClientID:            *clientID,
+		Debug:               *debug,
+		ProcessLogPath:      *processLog,
 		ExcludeGlobs:        exGlobs,
 		ExcludeRegex:        exRegex,
 		DeleteGuardRatio:    *deleteGuardRatio,

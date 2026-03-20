@@ -25,10 +25,11 @@ func TestEndToEndSync(t *testing.T) {
 	mustWrite(t, filepath.Join(target, "remove.txt"), []byte("delete"), 0o644)
 
 	svc, err := server.New(server.Config{
-		RootDir:  upstream,
-		LockDir:  filepath.Join(t.TempDir(), "locks"),
-		AuditDir: filepath.Join(t.TempDir(), "audit"),
-		PageSize: 2,
+		RootDir:        upstream,
+		LockDir:        filepath.Join(t.TempDir(), "locks"),
+		AuditDir:       filepath.Join(t.TempDir(), "audit"),
+		ProcessLogPath: filepath.Join(t.TempDir(), "process.log"),
+		PageSize:       2,
 		Modules: map[string]server.Module{
 			"mod1": {Name: "mod1", RootDir: moduleRoot, Tokens: map[string]struct{}{"tkn": {}}},
 		},
@@ -80,9 +81,10 @@ func TestLockedThenWaitWebSocket(t *testing.T) {
 	mustWrite(t, filepath.Join(moduleRoot, "a.txt"), []byte("ok"), 0o644)
 
 	svc, err := server.New(server.Config{
-		RootDir:  upstream,
-		LockDir:  filepath.Join(t.TempDir(), "locks"),
-		AuditDir: filepath.Join(t.TempDir(), "audit"),
+		RootDir:        upstream,
+		LockDir:        filepath.Join(t.TempDir(), "locks"),
+		AuditDir:       filepath.Join(t.TempDir(), "audit"),
+		ProcessLogPath: filepath.Join(t.TempDir(), "process.log"),
 		Modules: map[string]server.Module{
 			"mod1": {Name: "mod1", RootDir: moduleRoot, Tokens: map[string]struct{}{"tkn": {}}},
 		},
@@ -147,9 +149,10 @@ func TestDeleteGuardAbort(t *testing.T) {
 	}
 
 	svc, err := server.New(server.Config{
-		RootDir:  upstream,
-		LockDir:  filepath.Join(t.TempDir(), "locks"),
-		AuditDir: filepath.Join(t.TempDir(), "audit"),
+		RootDir:        upstream,
+		LockDir:        filepath.Join(t.TempDir(), "locks"),
+		AuditDir:       filepath.Join(t.TempDir(), "audit"),
+		ProcessLogPath: filepath.Join(t.TempDir(), "process.log"),
 		Modules: map[string]server.Module{
 			"mod1": {Name: "mod1", RootDir: moduleRoot, Tokens: map[string]struct{}{"tkn": {}}},
 		},
@@ -184,9 +187,10 @@ func TestRangeResumeDownload(t *testing.T) {
 	mustWrite(t, filepath.Join(moduleRoot, "big.bin"), content, 0o644)
 
 	svc, err := server.New(server.Config{
-		RootDir:  upstream,
-		LockDir:  filepath.Join(t.TempDir(), "locks"),
-		AuditDir: filepath.Join(t.TempDir(), "audit"),
+		RootDir:        upstream,
+		LockDir:        filepath.Join(t.TempDir(), "locks"),
+		AuditDir:       filepath.Join(t.TempDir(), "audit"),
+		ProcessLogPath: filepath.Join(t.TempDir(), "process.log"),
 		Modules: map[string]server.Module{
 			"mod1": {Name: "mod1", RootDir: moduleRoot, Tokens: map[string]struct{}{"tkn": {}}},
 		},

@@ -13,6 +13,8 @@ func main() {
 		listen       = flag.String("listen", "", "listen address, e.g. 0.0.0.0:8080 (overrides addr/port)")
 		listenAddr   = flag.String("listen-addr", "", "listen IP/host override, e.g. 0.0.0.0")
 		listenPort   = flag.Int("listen-port", 0, "listen port override")
+		debug        = flag.Bool("debug", false, "enable debug-level process logs")
+		processLog   = flag.String("process-log", "", "process log file path override")
 		trustedProxy stringList
 		configPath   = flag.String("config", "./server.yaml", "server YAML config")
 	)
@@ -28,6 +30,12 @@ func main() {
 	}
 	if *listenPort > 0 {
 		cfg.ListenPort = *listenPort
+	}
+	if *debug {
+		cfg.Debug = true
+	}
+	if *processLog != "" {
+		cfg.ProcessLogPath = *processLog
 	}
 	if len(trustedProxy) > 0 {
 		cfg.TrustedProxies = trustedProxy

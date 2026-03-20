@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +26,8 @@ type Config struct {
 	RootDir            string
 	ListenAddr         string
 	ListenPort         int
+	Debug              bool
+	ProcessLogPath     string
 	TrustedProxies     []string
 	LockDir            string
 	LockTTL            time.Duration
@@ -44,6 +47,7 @@ type Service struct {
 	sessions  map[string]*Session
 	upgrader  websocket.Upgrader
 	trusted   []netip.Prefix
+	plog      *processLogger
 }
 
 type Session struct {
@@ -78,6 +82,9 @@ func New(cfg Config) (*Service, error) {
 	if cfg.ListenPort <= 0 {
 		cfg.ListenPort = 8080
 	}
+	if cfg.ProcessLogPath == "" {
+		cfg.ProcessLogPath = "./process.log"
+	}
 	if cfg.AuditDir == "" {
 		cfg.AuditDir = "./audit"
 	}
@@ -97,10 +104,15 @@ func New(cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	plog, err := newProcessLogger(cfg.ProcessLogPath, cfg.Debug)
+	if err != nil {
+		return nil, err
+	}
 	return &Service{
 		cfg:       cfg,
 		locks:     lm,
 		audit:     audit,
+		plog:      plog,
 		snapshots: map[string]*Snapshot{},
 		sessions:  map[string]*Session{},
 		upgrader: websocket.Upgrader{
@@ -188,7 +200,57 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("/v1/snapshots/", s.handleManifest)
 	mux.HandleFunc("/v1/objects", s.handleObject)
 	mux.HandleFunc("/v1/sessions/", s.handleSessionCommit)
-	return mux
+	return s.loggingMiddleware(mux)
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	n, err := s.ResponseWriter.Write(b)
+	s.bytes += n
+	return n, err
+}
+
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := s.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("response writer does not support hijacking")
+	}
+	return h.Hijack()
+}
+
+func (s *statusRecorder) Unwrap() http.ResponseWriter {
+	return s.ResponseWriter
+}
+
+func (s *Service) loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		costMs := time.Since(start).Milliseconds()
+		clientIP := s.requestClientIP(r)
+		s.plog.Infof("request method=%s path=%s status=%d bytes=%d cost_ms=%d client_ip=%s", r.Method, r.URL.Path, rec.status, rec.bytes, costMs, clientIP)
+		s.plog.Debugf("request_details query=%q ua=%q remote=%q", r.URL.RawQuery, r.UserAgent(), r.RemoteAddr)
+	})
 }
 
 func (s *Service) health(w http.ResponseWriter, _ *http.Request) {
@@ -584,7 +646,8 @@ func (s *Service) logEvent(r *http.Request, event, module, sessionID, owner stri
 		clientIP = s.requestClientIP(r)
 	}
 	line := fmt.Sprintf("event=%s module=%s session=%s owner=%s", event, module, sessionID, owner)
-	fmt.Println(line)
+	s.plog.Infof("%s", line)
+	s.plog.Debugf("event_details client_ip=%s", clientIP)
 	s.audit.Write(map[string]any{
 		"event":      event,
 		"module":     module,

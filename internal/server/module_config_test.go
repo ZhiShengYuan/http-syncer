@@ -27,6 +27,9 @@ func TestLoadFileConfig(t *testing.T) {
 	if cfg.ListenAddr != "0.0.0.0" || cfg.ListenPort != 8080 {
 		t.Fatalf("unexpected listen defaults: %s:%d", cfg.ListenAddr, cfg.ListenPort)
 	}
+	if cfg.ProcessLogPath != "./process.log" {
+		t.Fatalf("unexpected process log default: %s", cfg.ProcessLogPath)
+	}
 }
 
 func TestLoadFileConfigListenAndTrustedProxy(t *testing.T) {
@@ -36,7 +39,7 @@ func TestLoadFileConfigListenAndTrustedProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfgPath := filepath.Join(t.TempDir(), "server.yaml")
-	content := "server:\n  root_dir: " + root + "\n  listen_addr: 127.0.0.1\n  listen_port: 9090\n  trusted_proxies:\n    - 127.0.0.1\n    - 10.0.0.0/8\nmodules:\n  - name: mod1\n    root: mod1\n    tokens:\n      - tkn\n"
+	content := "server:\n  root_dir: " + root + "\n  listen_addr: 127.0.0.1\n  listen_port: 9090\n  debug: true\n  process_log: /tmp/sync-http/process.log\n  trusted_proxies:\n    - 127.0.0.1\n    - 10.0.0.0/8\nmodules:\n  - name: mod1\n    root: mod1\n    tokens:\n      - tkn\n"
 	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -49,5 +52,11 @@ func TestLoadFileConfigListenAndTrustedProxy(t *testing.T) {
 	}
 	if len(cfg.TrustedProxies) != 2 {
 		t.Fatalf("unexpected trusted proxies: %#v", cfg.TrustedProxies)
+	}
+	if !cfg.Debug {
+		t.Fatal("expected debug enabled")
+	}
+	if cfg.ProcessLogPath != "/tmp/sync-http/process.log" {
+		t.Fatalf("unexpected process log path: %s", cfg.ProcessLogPath)
 	}
 }

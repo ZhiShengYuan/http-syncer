@@ -15,6 +15,8 @@ type FileConfig struct {
 		RootDir            string   `yaml:"root_dir"`
 		ListenAddr         string   `yaml:"listen_addr"`
 		ListenPort         int      `yaml:"listen_port"`
+		Debug              bool     `yaml:"debug"`
+		ProcessLog         string   `yaml:"process_log"`
 		TrustedProxies     []string `yaml:"trusted_proxies"`
 		LockDir            string   `yaml:"lock_dir"`
 		AuditDir           string   `yaml:"audit_dir"`
@@ -62,6 +64,10 @@ func LoadFileConfig(path string) (*Config, error) {
 	listenPort := fc.Server.ListenPort
 	if listenPort <= 0 {
 		listenPort = 8080
+	}
+	processLog := strings.TrimSpace(fc.Server.ProcessLog)
+	if processLog == "" {
+		processLog = "./process.log"
 	}
 
 	lockDir := fc.Server.LockDir
@@ -140,6 +146,8 @@ func LoadFileConfig(path string) (*Config, error) {
 		RootDir:            rootDir,
 		ListenAddr:         listenAddr,
 		ListenPort:         listenPort,
+		Debug:              fc.Server.Debug,
+		ProcessLogPath:     processLog,
 		TrustedProxies:     fc.Server.TrustedProxies,
 		LockDir:            lockDir,
 		LockTTL:            lockTTL,

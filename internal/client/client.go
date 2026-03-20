@@ -29,6 +29,8 @@ type Config struct {
 	SourcePath          string
 	TargetDir           string
 	ClientID            string
+	Debug               bool
+	ProcessLogPath      string
 	ExcludeGlobs        []string
 	ExcludeRegex        []string
 	DeleteGuardRatio    float64
@@ -37,6 +39,7 @@ type Config struct {
 	DryRun              bool
 	PageSize            int
 	Backoffs            []time.Duration
+	plog                *processLogger
 }
 
 type Result struct {
@@ -48,6 +51,13 @@ type Result struct {
 }
 
 func Run(ctx context.Context, cfg Config) (*Result, error) {
+	plog, err := newProcessLogger(cfg.ProcessLogPath, cfg.Debug)
+	if err != nil {
+		return nil, err
+	}
+	cfg.plog = plog
+	cfg.plog.Infof("sync start server=%s module=%s source=%s target=%s dry_run=%t", cfg.ServerURL, cfg.Module, cfg.SourcePath, cfg.TargetDir, cfg.DryRun)
+
 	if len(cfg.Backoffs) == 0 {
 		cfg.Backoffs = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
 	}
@@ -82,18 +92,23 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	for {
 		locked, err := createSessionOnce(ctx, hc, cfg, createBody, &sresp)
 		if err == nil {
+			cfg.plog.Infof("session created session=%s snapshot=%s", sresp.SessionID, sresp.SnapshotID)
 			break
 		}
 		if locked {
+			cfg.plog.Infof("module locked, waiting websocket module=%s", createReq.Module)
 			if err := waitForUnlockWS(ctx, cfg, createReq.Module); err != nil {
 				return nil, err
 			}
+			cfg.plog.Infof("module unlocked notification module=%s", createReq.Module)
 			transientRetry = 0
 			continue
 		}
 		if transientRetry >= len(cfg.Backoffs) {
+			cfg.plog.Debugf("session create final error: %v", err)
 			return nil, err
 		}
+		cfg.plog.Debugf("session create transient retry=%d err=%v", transientRetry, err)
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -106,10 +121,12 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.plog.Infof("manifest files=%d", len(remote))
 	local, err := scanLocal(cfg.TargetDir, ex)
 	if err != nil {
 		return nil, err
 	}
+	cfg.plog.Infof("local files=%d", len(local))
 
 	toDownload := make([]common.ManifestEntry, 0)
 	for p, re := range remote {
@@ -127,8 +144,10 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 		}
 	}
 	sort.Strings(toDelete)
+	cfg.plog.Infof("plan download=%d delete=%d", len(toDownload), len(toDelete))
 
 	if err := enforceDeleteGuard(cfg, len(local), len(toDelete)); err != nil {
+		cfg.plog.Debugf("delete guard error: %v", err)
 		return nil, err
 	}
 
@@ -140,8 +159,10 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 
 	for _, e := range toDownload {
 		if cfg.DryRun {
+			cfg.plog.Debugf("dry run skip download path=%s", e.Path)
 			continue
 		}
+		cfg.plog.Debugf("download path=%s", e.Path)
 		written, err := downloadAndPromote(ctx, hc, cfg, sresp.SnapshotID, e, staging)
 		if err != nil {
 			return nil, err
@@ -152,10 +173,12 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 
 	for _, p := range toDelete {
 		if cfg.DryRun {
+			cfg.plog.Debugf("dry run skip delete path=%s", p)
 			continue
 		}
 		if err := os.Remove(filepath.Join(cfg.TargetDir, filepath.FromSlash(p))); err == nil {
 			res.Deleted++
+			cfg.plog.Debugf("deleted path=%s", p)
 		}
 	}
 
@@ -166,6 +189,7 @@ func Run(ctx context.Context, cfg Config) (*Result, error) {
 	if err := commitSession(ctx, hc, cfg, *res); err != nil {
 		return nil, err
 	}
+	cfg.plog.Infof("sync complete downloaded=%d deleted=%d bytes=%d", res.Downloaded, res.Deleted, res.Bytes)
 	return res, nil
 }
 
@@ -223,6 +247,7 @@ func waitForUnlockWS(ctx context.Context, cfg Config, module string) error {
 		if err := conn.ReadJSON(&ev); err != nil {
 			return err
 		}
+		cfg.plog.Debugf("websocket event=%s module=%s", ev.Event, module)
 		if ev.Event == "unlocked" {
 			return nil
 		}

@@ -34,9 +34,10 @@ func testServiceWithModules(t *testing.T) (*Service, string) {
 		t.Fatal(err)
 	}
 	svc, err := New(Config{
-		RootDir:  root,
-		LockDir:  t.TempDir(),
-		AuditDir: t.TempDir(),
+		RootDir:        root,
+		LockDir:        t.TempDir(),
+		AuditDir:       t.TempDir(),
+		ProcessLogPath: filepath.Join(t.TempDir(), "process.log"),
 		Modules: map[string]Module{
 			"mod1": {Name: "mod1", RootDir: mod1, Tokens: map[string]struct{}{"tkn1": {}}},
 			"mod2": {Name: "mod2", RootDir: mod2, Tokens: map[string]struct{}{"tkn2": {}}},
@@ -52,9 +53,10 @@ func TestLockWaitWebSocketNotifiesUnlock(t *testing.T) {
 	root := t.TempDir()
 	modRoot := root
 	svc, err := New(Config{
-		RootDir:  root,
-		LockDir:  t.TempDir(),
-		AuditDir: t.TempDir(),
+		RootDir:        root,
+		LockDir:        t.TempDir(),
+		AuditDir:       t.TempDir(),
+		ProcessLogPath: filepath.Join(t.TempDir(), "process.log"),
 		Modules: map[string]Module{
 			"mod1": {Name: "mod1", RootDir: modRoot, Tokens: map[string]struct{}{"tkn": {}}},
 		},

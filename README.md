@@ -14,6 +14,7 @@
 - 断点续传（HTTP Range）
 - 保留文件 `mode` 与 `mtime`
 - 审计日志（JSONL，按天滚动，保留 30 天）
+- 进程日志（文本行日志，支持 debug 级别）
 - 可配置监听地址/端口与可信代理（trusted proxy）
 
 ---
@@ -44,6 +45,8 @@ server:
   root_dir: /data/upstream
   listen_addr: 0.0.0.0
   listen_port: 8080
+  debug: false
+  process_log: /var/log/sync-http/process.log
   trusted_proxies:
     - 127.0.0.1
     - 10.0.0.0/8
@@ -111,6 +114,8 @@ go run ./cmd/sync-client \
 - `server.lock_dir`（可选，默认 `.sync-locks`）
 - `server.listen_addr`（可选，默认 `0.0.0.0`）
 - `server.listen_port`（可选，默认 `8080`）
+- `server.debug`（可选，默认 `false`）
+- `server.process_log`（可选，默认 `./process.log`）
 - `server.trusted_proxies`（可选，IP/CIDR 列表）
 - `server.audit_dir`（可选，默认 `./audit`）
 - `server.audit_retention_days`（可选，默认 `30`）
@@ -143,6 +148,8 @@ go run ./cmd/sync-client \
 - `-source`：模块内源路径，默认 `.`
 - `-target`：本地镜像目录
 - `-client-id`：客户端标识
+- `-debug`：开启 debug 级别客户端日志
+- `-process-log`：客户端日志文件路径（默认输出到 stdout）
 - `-exclude-glob`：排除 glob（可重复）
 - `-exclude-regex`：排除 regex（可重复）
 - `-delete-guard-ratio`：删除比例阈值，默认 `0.10`
@@ -156,6 +163,8 @@ go run ./cmd/sync-client \
 - `-listen`：完整监听地址（如 `0.0.0.0:8080`），优先级高于 addr/port
 - `-listen-addr`：覆盖配置中的监听地址
 - `-listen-port`：覆盖配置中的监听端口
+- `-debug`：开启 debug 级别进程日志
+- `-process-log`：覆盖配置中的进程日志文件路径
 - `-trusted-proxy`：覆盖配置中的可信代理（可重复）
 
 ---
@@ -380,6 +389,14 @@ curl --http1.1 -i -N \
 - `session_committed`
 - `ws_wait_start`
 - `ws_wait_unlocked`
+
+## 10.1 进程日志
+
+服务端进程日志用于排障与运行观测：
+
+- 路径：`server.process_log`（默认 `./process.log`）
+- 内容：HTTP 请求日志、业务事件日志（例如加锁/解锁/会话创建）
+- 级别：默认 `INFO`，开启 `server.debug: true` 或 `-debug` 后输出 `DEBUG`
 
 ---
 
