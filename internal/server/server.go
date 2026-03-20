@@ -547,8 +547,9 @@ func (s *Service) handleObject(w http.ResponseWriter, r *http.Request) {
 	}
 	snapshotID := r.URL.Query().Get("snapshot_id")
 	p := r.URL.Query().Get("path")
-	if snapshotID == "" || p == "" {
-		http.Error(w, "snapshot_id and path required", http.StatusBadRequest)
+	checksum := r.URL.Query().Get("checksum")
+	if snapshotID == "" || (p == "" && checksum == "") {
+		http.Error(w, "snapshot_id and one of path/checksum required", http.StatusBadRequest)
 		return
 	}
 
@@ -569,12 +570,23 @@ func (s *Service) handleObject(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	entry, ok := snap.ByPath[p]
+	var (
+		entry common.ManifestEntry
+		ok    bool
+	)
+	if checksum != "" {
+		entry, ok = snap.ByChecksum[checksum]
+	} else {
+		entry, ok = snap.ByPath[p]
+	}
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
 	abs := filepath.Join(snap.SourceDir, filepath.FromSlash(p))
+	if checksum != "" {
+		abs = filepath.Join(snap.SourceDir, filepath.FromSlash(entry.Path))
+	}
 	f, err := os.Open(abs)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

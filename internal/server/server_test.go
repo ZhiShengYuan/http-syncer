@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -210,5 +211,64 @@ func TestParseTrustedProxiesInvalid(t *testing.T) {
 	_, err := parseTrustedProxies([]string{"not-an-ip"})
 	if err == nil {
 		t.Fatal("expected parse error")
+	}
+}
+
+func TestObjectDownloadByChecksum(t *testing.T) {
+	svc, root := testServiceWithModules(t)
+	ts := httptest.NewServer(svc.Handler())
+	defer ts.Close()
+
+	if err := os.WriteFile(filepath.Join(root, "mod1", "dup.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(common.SessionCreateRequest{Module: "mod1", SourcePath: ".", ClientID: "c"})
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/sessions", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer tkn1")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sresp common.SessionCreateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sresp); err != nil {
+		resp.Body.Close()
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	mreq, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/snapshots/"+sresp.SnapshotID+"/manifest", nil)
+	mreq.Header.Set("Authorization", "Bearer tkn1")
+	mresp, err := http.DefaultClient.Do(mreq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest common.ManifestPageResponse
+	if err := json.NewDecoder(mresp.Body).Decode(&manifest); err != nil {
+		mresp.Body.Close()
+		t.Fatal(err)
+	}
+	mresp.Body.Close()
+	if len(manifest.Entries) == 0 {
+		t.Fatal("expected manifest entries")
+	}
+
+	values := "snapshot_id=" + sresp.SnapshotID + "&checksum=" + manifest.Entries[0].Checksum
+	oreq, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/objects?"+values, nil)
+	oreq.Header.Set("Authorization", "Bearer tkn1")
+	oresp, err := http.DefaultClient.Do(oreq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer oresp.Body.Close()
+	if oresp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", oresp.StatusCode)
+	}
+	b, err := io.ReadAll(oresp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "a" {
+		t.Fatalf("unexpected body: %q", string(b))
 	}
 }

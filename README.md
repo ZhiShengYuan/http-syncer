@@ -245,6 +245,7 @@ go run ./cmd/sync-client \
 
 - `GET /v1/snapshots/{snapshot_id}/manifest?page_size=5000&cursor=0`
 - `GET /v1/objects?snapshot_id={snapshot_id}&path={path}`
+- `GET /v1/objects?snapshot_id={snapshot_id}&checksum={sha256}`（用于按内容去重下载）
 
 ### 6.6 会话提交
 

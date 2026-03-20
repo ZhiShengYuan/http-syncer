@@ -257,6 +257,83 @@ func TestRangeResumeDownload(t *testing.T) {
 	}
 }
 
+func TestDedupSameChecksumUsesSingleStoredObject(t *testing.T) {
+	upstream := t.TempDir()
+	moduleRoot := filepath.Join(upstream, "mod1")
+	target := t.TempDir()
+	content := []byte("same-content")
+	mustWrite(t, filepath.Join(moduleRoot, "a.txt"), content, 0o644)
+	mustWrite(t, filepath.Join(moduleRoot, "b.txt"), content, 0o644)
+
+	svc, err := server.New(server.Config{
+		RootDir:        upstream,
+		LockDir:        filepath.Join(t.TempDir(), "locks"),
+		AuditDir:       filepath.Join(t.TempDir(), "audit"),
+		ProcessLogPath: filepath.Join(t.TempDir(), "process.log"),
+		Modules: map[string]server.Module{
+			"mod1": {Name: "mod1", RootDir: moduleRoot, Tokens: map[string]struct{}{"tkn": {}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(svc.Handler())
+	defer ts.Close()
+
+	_, err = Run(context.Background(), Config{
+		ServerURL:           ts.URL,
+		Token:               "tkn",
+		Module:              "mod1",
+		SourcePath:          ".",
+		TargetDir:           target,
+		ClientID:            "test",
+		DeleteGuardRatio:    1.0,
+		DeleteGuardMinFiles: 1,
+		Backoffs:            []time.Duration{10 * time.Millisecond},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	aInfo, err := os.Stat(filepath.Join(target, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bInfo, err := os.Stat(filepath.Join(target, "b.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(aInfo, bInfo) {
+		t.Fatal("expected duplicate files to share one stored object")
+	}
+	aLink, err := os.Readlink(filepath.Join(target, "a.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bLink, err := os.Readlink(filepath.Join(target, "b.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.IsAbs(aLink) || filepath.IsAbs(bLink) {
+		t.Fatal("expected relative symlink targets")
+	}
+
+	cacheDir := filepath.Join(target, ".sync-http-objects")
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regular := 0
+	for _, entry := range entries {
+		if entry.Type().IsRegular() {
+			regular++
+		}
+	}
+	if regular != 1 {
+		t.Fatalf("expected 1 cached object, got %d", regular)
+	}
+}
+
 func mustWrite(t *testing.T, path string, data []byte, mode os.FileMode) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

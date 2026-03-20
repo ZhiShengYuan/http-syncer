@@ -328,18 +328,24 @@ func scanLocal(root string, ex *filter.Excluder) (map[string]common.ManifestEntr
 			}
 			return nil
 		}
+		if strings.HasPrefix(rel, ".sync-http-objects") {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if ok, _ := ex.Match(rel); ok {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		info, err := d.Info()
+		info, err := os.Stat(path)
 		if err != nil {
 			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
 		}
 		res[rel] = common.ManifestEntry{Path: rel, Size: info.Size(), Mtime: info.ModTime().Unix(), Mode: uint32(info.Mode().Perm())}
 		return nil
@@ -373,6 +379,19 @@ func downloadAll(ctx context.Context, hc *http.Client, cfg Config, snapshotID st
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	objectStore := filepath.Join(cfg.TargetDir, ".sync-http-objects")
+	if err := os.MkdirAll(objectStore, 0o755); err != nil {
+		return 0, 0, err
+	}
+	groups := make(map[string][]common.ManifestEntry)
+	for _, entry := range entries {
+		groups[entry.Checksum] = append(groups[entry.Checksum], entry)
+	}
+	checksums := make([]string, 0, len(groups))
+	for checksum := range groups {
+		checksums = append(checksums, checksum)
+	}
+	sort.Strings(checksums)
 
 	sem := make(chan struct{}, cfg.DownloadConcurrency)
 	var wg sync.WaitGroup
@@ -390,24 +409,33 @@ func downloadAll(ctx context.Context, hc *http.Client, cfg Config, snapshotID st
 		}
 	}
 
-	for _, e := range entries {
+	for _, checksum := range checksums {
 		if ctx.Err() != nil {
 			break
 		}
 		sem <- struct{}{}
-		entry := e
+		group := append([]common.ManifestEntry(nil), groups[checksum]...)
+		sort.Slice(group, func(i, j int) bool { return group[i].Path < group[j].Path })
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			cfg.plog.Debugf("download path=%s", entry.Path)
-			written, err := downloadAndPromote(ctx, hc, cfg, snapshotID, entry, staging)
+			representative := group[0]
+			cfg.plog.Debugf("download checksum=%s path=%s duplicates=%d", representative.Checksum, representative.Path, len(group))
+			objectPath, written, err := downloadObject(ctx, hc, cfg, snapshotID, representative, objectStore)
 			if err != nil {
 				setErr(err)
 				return
 			}
+			if err := promoteObjectToEntries(objectPath, group, cfg.TargetDir); err != nil {
+				setErr(err)
+				return
+			}
+			if err := os.RemoveAll(filepath.Join(staging, filepath.FromSlash(representative.Path))); err != nil {
+				cfg.plog.Debugf("cleanup staging path=%s err=%v", representative.Path, err)
+			}
 			mu.Lock()
-			downloaded++
+			downloaded += len(group)
 			bytesWritten += written
 			mu.Unlock()
 		}()
@@ -423,9 +451,29 @@ func downloadAll(ctx context.Context, hc *http.Client, cfg Config, snapshotID st
 }
 
 func downloadAndPromote(ctx context.Context, hc *http.Client, cfg Config, snapshotID string, entry common.ManifestEntry, staging string) (int64, error) {
-	stagePath := filepath.Join(staging, filepath.FromSlash(entry.Path))
-	if err := os.MkdirAll(filepath.Dir(stagePath), 0o755); err != nil {
+	objectStore := filepath.Join(cfg.TargetDir, ".sync-http-objects")
+	if err := os.MkdirAll(objectStore, 0o755); err != nil {
 		return 0, err
+	}
+	objectPath, written, err := downloadObject(ctx, hc, cfg, snapshotID, entry, objectStore)
+	if err != nil {
+		return 0, err
+	}
+	if err := promoteObjectToEntries(objectPath, []common.ManifestEntry{entry}, cfg.TargetDir); err != nil {
+		return 0, err
+	}
+	_ = os.RemoveAll(filepath.Join(staging, filepath.FromSlash(entry.Path)))
+	return written, nil
+}
+
+func downloadObject(ctx context.Context, hc *http.Client, cfg Config, snapshotID string, entry common.ManifestEntry, objectStore string) (string, int64, error) {
+	objectPath := filepath.Join(objectStore, entry.Checksum)
+	if info, err := os.Stat(objectPath); err == nil && info.Mode().IsRegular() && info.Size() == entry.Size {
+		return objectPath, 0, nil
+	}
+	stagePath := filepath.Join(objectStore, ".staging", entry.Checksum)
+	if err := os.MkdirAll(filepath.Dir(stagePath), 0o755); err != nil {
+		return "", 0, err
 	}
 	part := stagePath + ".part"
 
@@ -436,11 +484,11 @@ func downloadAndPromote(ctx context.Context, hc *http.Client, cfg Config, snapsh
 
 	values := url.Values{}
 	values.Set("snapshot_id", snapshotID)
-	values.Set("path", entry.Path)
+	values.Set("checksum", entry.Checksum)
 	u := strings.TrimSuffix(cfg.ServerURL, "/") + "/v1/objects?" + values.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
 	if cfg.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.Token)
@@ -452,12 +500,12 @@ func downloadAndPromote(ctx context.Context, hc *http.Client, cfg Config, snapsh
 
 	resp, err := hc.Do(req)
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
-		return 0, fmt.Errorf("download %s failed: %s", entry.Path, string(b))
+		return "", 0, fmt.Errorf("download %s failed: %s", entry.Path, string(b))
 	}
 
 	flag := os.O_CREATE | os.O_WRONLY
@@ -469,40 +517,62 @@ func downloadAndPromote(ctx context.Context, hc *http.Client, cfg Config, snapsh
 	}
 	f, err := os.OpenFile(part, flag, 0o644)
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
 	written, err := io.Copy(f, resp.Body)
 	if cerr := f.Close(); err == nil && cerr != nil {
 		err = cerr
 	}
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
 
 	sum, err := fileChecksum(part)
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
 	if sum != entry.Checksum {
-		return 0, fmt.Errorf("checksum mismatch for %s", entry.Path)
+		return "", 0, fmt.Errorf("checksum mismatch for %s", entry.Path)
 	}
 
-	if err := os.Chmod(part, os.FileMode(entry.Mode)); err != nil {
-		return 0, err
+	if err := os.MkdirAll(filepath.Dir(objectPath), 0o755); err != nil {
+		return "", 0, err
 	}
-	mt := time.Unix(entry.Mtime, 0)
-	if err := os.Chtimes(part, mt, mt); err != nil {
-		return 0, err
+	if err := os.Rename(part, objectPath); err != nil {
+		return "", 0, err
 	}
+	return objectPath, written + offset, nil
+}
 
-	target := filepath.Join(cfg.TargetDir, filepath.FromSlash(entry.Path))
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return 0, err
+func promoteObjectToEntries(objectPath string, entries []common.ManifestEntry, targetRoot string) error {
+	for _, entry := range entries {
+		target := filepath.Join(targetRoot, filepath.FromSlash(entry.Path))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		relObj, err := filepath.Rel(filepath.Dir(target), objectPath)
+		if err != nil {
+			return err
+		}
+		if err := os.Symlink(relObj, target); err != nil {
+			return err
+		}
 	}
-	if err := os.Rename(part, target); err != nil {
-		return 0, err
+	if len(entries) == 0 {
+		return nil
 	}
-	return written + offset, nil
+	mode := os.FileMode(entries[0].Mode)
+	mt := time.Unix(entries[0].Mtime, 0)
+	if err := os.Chmod(objectPath, mode); err != nil {
+		return err
+	}
+	if err := os.Chtimes(objectPath, mt, mt); err != nil {
+		return err
+	}
+	return nil
 }
 
 func fileChecksum(path string) (string, error) {

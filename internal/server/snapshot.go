@@ -13,16 +13,18 @@ import (
 )
 
 type Snapshot struct {
-	ID        string
-	SourceDir string
-	Entries   []common.ManifestEntry
-	ByPath    map[string]common.ManifestEntry
-	CreatedAt time.Time
+	ID         string
+	SourceDir  string
+	Entries    []common.ManifestEntry
+	ByPath     map[string]common.ManifestEntry
+	ByChecksum map[string]common.ManifestEntry
+	CreatedAt  time.Time
 }
 
 func BuildSnapshot(id string, sourceDir string, ex *filter.Excluder) (*Snapshot, error) {
 	entries := make([]common.ManifestEntry, 0, 1024)
 	byPath := make(map[string]common.ManifestEntry)
+	byChecksum := make(map[string]common.ManifestEntry)
 
 	err := filepath.WalkDir(sourceDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -63,6 +65,9 @@ func BuildSnapshot(id string, sourceDir string, ex *filter.Excluder) (*Snapshot,
 			}
 			entries = append(entries, entry)
 			byPath[rel] = entry
+			if _, ok := byChecksum[entry.Checksum]; !ok {
+				byChecksum[entry.Checksum] = entry
+			}
 		}
 		return nil
 	})
@@ -74,7 +79,7 @@ func BuildSnapshot(id string, sourceDir string, ex *filter.Excluder) (*Snapshot,
 		return entries[i].Path < entries[j].Path
 	})
 
-	return &Snapshot{ID: id, SourceDir: sourceDir, Entries: entries, ByPath: byPath, CreatedAt: time.Now()}, nil
+	return &Snapshot{ID: id, SourceDir: sourceDir, Entries: entries, ByPath: byPath, ByChecksum: byChecksum, CreatedAt: time.Now()}, nil
 }
 
 func checksum(path string) (string, error) {

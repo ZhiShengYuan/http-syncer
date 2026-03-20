@@ -82,6 +82,7 @@ func (m *moduleIndex) buildSnapshot(snapshotID, sourcePath string, ex *filter.Ex
 
 	entries := make([]common.ManifestEntry, 0, len(data.entries))
 	byPath := make(map[string]common.ManifestEntry)
+	byChecksum := make(map[string]common.ManifestEntry)
 	for _, item := range data.entries {
 		rel := item.Path
 		if prefix != "" {
@@ -103,15 +104,19 @@ func (m *moduleIndex) buildSnapshot(snapshotID, sourcePath string, ex *filter.Ex
 		entry.Path = rel
 		entries = append(entries, entry)
 		byPath[rel] = entry
+		if _, ok := byChecksum[entry.Checksum]; !ok {
+			byChecksum[entry.Checksum] = entry
+		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 
 	return &Snapshot{
-		ID:        snapshotID,
-		SourceDir: filepath.Join(m.rootDir, filepath.FromSlash(prefix)),
-		Entries:   entries,
-		ByPath:    byPath,
-		CreatedAt: time.Now(),
+		ID:         snapshotID,
+		SourceDir:  filepath.Join(m.rootDir, filepath.FromSlash(prefix)),
+		Entries:    entries,
+		ByPath:     byPath,
+		ByChecksum: byChecksum,
+		CreatedAt:  time.Now(),
 	}, nil
 }
 
