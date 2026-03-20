@@ -42,6 +42,7 @@ type Service struct {
 	cfg       Config
 	locks     *lock.Manager
 	audit     *AuditWriter
+	indexer   *snapshotIndexer
 	mu        sync.RWMutex
 	snapshots map[string]*Snapshot
 	sessions  map[string]*Session
@@ -108,10 +109,15 @@ func New(cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	indexer, err := newSnapshotIndexer(cfg.Modules, plog)
+	if err != nil {
+		return nil, err
+	}
 	return &Service{
 		cfg:       cfg,
 		locks:     lm,
 		audit:     audit,
+		indexer:   indexer,
 		plog:      plog,
 		snapshots: map[string]*Snapshot{},
 		sessions:  map[string]*Session{},
@@ -445,8 +451,12 @@ func (s *Service) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	sid := strconv.FormatInt(time.Now().UnixNano(), 36)
 	snapshotID := "snap_" + sid
-	snap, err := BuildSnapshot(snapshotID, absSrc, ex)
+	snap, err := s.indexer.buildSnapshot(snapshotID, req.Module, sourcePath, ex)
 	if err != nil {
+		if errors.Is(err, ErrSnapshotNotReady) {
+			http.Error(w, "snapshot warming up, retry later", http.StatusServiceUnavailable)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
