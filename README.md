@@ -228,6 +228,90 @@ go run ./cmd/sync-client \
 - WebSocket 等待接口同样校验模块 token
 - 模块根目录受 `root_dir` 边界保护，防止越界访问
 
+### 8.1 Token 配置示例
+
+`server.yaml` 中每个模块单独配置可用 token：
+
+```yaml
+modules:
+  - name: core
+    root: core
+    tokens:
+      - core-token-prod-001
+      - core-token-ops-001
+  - name: docs
+    root: docs
+    tokens:
+      - docs-token-prod-001
+```
+
+要点：
+
+- token 只在所属模块生效，不能跨模块访问
+- 可以给同一模块配置多个 token，便于轮换与分角色使用
+- 建议按环境区分（prod/staging），不要复用同一 token
+
+### 8.2 请求中携带 Token
+
+所有受保护 API 都用 Bearer 头：
+
+```http
+Authorization: Bearer <token>
+```
+
+HTTP 示例：
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/sessions \
+  -H 'Authorization: Bearer core-token-prod-001' \
+  -H 'Content-Type: application/json' \
+  -d '{"module":"core","source_path":".","client_id":"cli"}'
+```
+
+WebSocket 示例（必须也带 Authorization 头）：
+
+```bash
+curl --http1.1 -i -N \
+  -H 'Connection: Upgrade' \
+  -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' \
+  -H 'Sec-WebSocket-Key: SGVsbG9Xb3JsZDEyMw==' \
+  -H 'Authorization: Bearer core-token-prod-001' \
+  'http://127.0.0.1:8080/v1/locks/wait/ws?module=core'
+```
+
+### 8.3 鉴权失败示例
+
+常见失败：
+
+- 缺少 Authorization 头 -> `401 Unauthorized`
+- token 不在该模块白名单 -> `401 Unauthorized`
+- module 不存在 -> `401 Unauthorized`（当前实现）
+
+排查建议：
+
+- 先确认 `module` 名字拼写
+- 再确认 token 是否出现在对应 `modules[].tokens`
+- 最后确认请求头是否是 `Authorization: Bearer ...`
+
+### 8.4 Token 轮换建议（不停机）
+
+由于服务端配置是启动加载，推荐轮换流程：
+
+1. 在 YAML 中为模块新增新 token（保留旧 token）
+2. 重启 `sync-server`
+3. 客户端切换到新 token
+4. 验证无误后从 YAML 删除旧 token
+5. 再次重启 `sync-server`
+
+### 8.5 生产安全建议
+
+- 不要把 token 硬编码到代码仓库
+- 通过环境变量或密钥管理系统注入（如 systemd EnvironmentFile）
+- 对 token 做最小权限划分（按模块/按用途拆分）
+- 开启 HTTPS（反向代理）避免明文传输
+- 定期轮换 token 并结合审计日志追踪调用方
+
 注意：当前示例使用明文 HTTP。生产环境建议：
 
 - 通过反向代理启用 HTTPS
@@ -406,6 +490,15 @@ go test ./...
 ### 12.2 提示 `token not authorized for module`
 
 确认 token 在该模块 `tokens` 列表内。
+
+可用下面命令快速验证：
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/sessions \
+  -H 'Authorization: Bearer <你的token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"module":"<模块名>","source_path":".","client_id":"debug"}'
+```
 
 ### 12.3 同步一直等待
 
