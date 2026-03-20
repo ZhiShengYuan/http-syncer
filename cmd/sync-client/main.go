@@ -1,0 +1,61 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log"
+	"strings"
+	"sync-http/internal/client"
+	"time"
+)
+
+type stringList []string
+
+func (s *stringList) String() string { return strings.Join(*s, ",") }
+func (s *stringList) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
+func main() {
+	var (
+		serverURL           = flag.String("server", "http://127.0.0.1:8080", "sync server URL")
+		token               = flag.String("token", "", "bearer token")
+		module              = flag.String("module", "", "module name on server (required)")
+		sourcePath          = flag.String("source", ".", "source path on server")
+		targetDir           = flag.String("target", "./mirror", "local mirror target directory")
+		clientID            = flag.String("client-id", "sync-client", "client id")
+		deleteGuardRatio    = flag.Float64("delete-guard-ratio", 0.10, "abort when delete ratio exceeds this")
+		deleteGuardMinFiles = flag.Int("delete-guard-min-files", 1000, "enable delete guard only when local files >= this")
+		forceDeleteGuard    = flag.Bool("force-delete-guard", false, "override delete guard")
+		dryRun              = flag.Bool("dry-run", false, "plan only, no writes")
+		pageSize            = flag.Int("page-size", 5000, "manifest page size")
+	)
+	var exGlobs, exRegex stringList
+	flag.Var(&exGlobs, "exclude-glob", "exclude glob pattern (repeatable)")
+	flag.Var(&exRegex, "exclude-regex", "exclude regex pattern (repeatable)")
+	flag.Parse()
+
+	ctx := context.Background()
+	res, err := client.Run(ctx, client.Config{
+		ServerURL:           *serverURL,
+		Token:               *token,
+		Module:              *module,
+		SourcePath:          *sourcePath,
+		TargetDir:           *targetDir,
+		ClientID:            *clientID,
+		ExcludeGlobs:        exGlobs,
+		ExcludeRegex:        exRegex,
+		DeleteGuardRatio:    *deleteGuardRatio,
+		DeleteGuardMinFiles: *deleteGuardMinFiles,
+		ForceDeleteGuard:    *forceDeleteGuard,
+		DryRun:              *dryRun,
+		PageSize:            *pageSize,
+		Backoffs:            []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("session=%s snapshot=%s downloaded=%d deleted=%d bytes=%d\n", res.SessionID, res.SnapshotID, res.Downloaded, res.Deleted, res.Bytes)
+}

@@ -1,0 +1,18 @@
+server:
+  root_dir: /data/upstream
+  lock_dir: /var/lib/sync-http/locks
+  audit_dir: /var/log/sync-http/audit
+  audit_retention_days: 30
+  page_size: 5000
+  lock_ttl: 10m
+  snapshot_ttl: 30m
+
+modules:
+  - name: core
+    root: core
+    tokens:
+      - core-token
+  - name: docs
+    root: docs
+    tokens:
+      - docs-token
