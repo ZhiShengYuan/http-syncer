@@ -267,7 +267,117 @@ go run ./cmd/sync-client \
 
 ---
 
-## 11. 测试
+## 11. 锁文件机制（给 `apt-sync.py` 使用）
+
+你提到要和 `apt-sync.py` 配合，这里给出可直接落地的锁使用规范。
+
+### 11.1 先说结论
+
+- `apt-sync.py` **不要直接写本地 lock 文件**。
+- 正确做法是：通过 `sync-server` 的锁 API 申请/释放锁。
+- `sync-server` 会在 `server.lock_dir` 下维护 lock 文件，作为服务端锁状态落盘。
+
+### 11.2 锁作用
+
+- 锁粒度是 **模块级**。
+- 一个模块在上游同步中（`apt-sync.py` 正在跑）时，客户端拉取会话会收到 `423 Locked`。
+- 客户端随后通过 WebSocket 等待解锁事件，避免盲目轮询。
+
+### 11.3 锁生命周期（推荐）
+
+1. `apt-sync.py` 启动前先调用 `POST /v1/locks` 抢锁。
+2. 抢锁成功后开始执行真正的上游同步。
+3. 无论成功失败，都在 `finally` 调用 `POST /v1/locks/release` 释放锁。
+4. 若进程异常退出未释放，锁会在 `ttl_seconds` 到期后自动失效。
+
+### 11.4 API 示例（模块 `core`）
+
+加锁：
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/locks \
+  -H 'Authorization: Bearer core-token' \
+  -H 'Content-Type: application/json' \
+  -d '{"module":"core","owner":"apt-sync.py@hostA","ttl_seconds":3600}'
+```
+
+解锁：
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/locks/release \
+  -H 'Authorization: Bearer core-token' \
+  -H 'Content-Type: application/json' \
+  -d '{"module":"core","owner":"apt-sync.py@hostA"}'
+```
+
+说明：
+
+- `owner` 建议带主机名/实例标识，方便排查。
+- `ttl_seconds` 要覆盖一次完整 `apt-sync.py` 最长运行时长。
+- 如果返回 `423`，说明已有上游任务持锁，当前任务应退出或延后重试。
+
+### 11.5 `apt-sync.py` 集成伪代码
+
+```python
+import requests
+
+BASE = "http://127.0.0.1:8080"
+TOKEN = "core-token"
+MODULE = "core"
+OWNER = "apt-sync.py@hostA"
+
+headers = {
+    "Authorization": f"Bearer {TOKEN}",
+    "Content-Type": "application/json",
+}
+
+def acquire_lock():
+    r = requests.post(
+        f"{BASE}/v1/locks",
+        headers=headers,
+        json={"module": MODULE, "owner": OWNER, "ttl_seconds": 3600},
+        timeout=10,
+    )
+    if r.status_code == 204:
+        return True
+    if r.status_code == 423:
+        return False
+    r.raise_for_status()
+
+def release_lock():
+    requests.post(
+        f"{BASE}/v1/locks/release",
+        headers=headers,
+        json={"module": MODULE, "owner": OWNER},
+        timeout=10,
+    )
+
+ok = acquire_lock()
+if not ok:
+    raise SystemExit("module is locked by another upstream sync")
+
+try:
+    # 在这里执行 apt-sync.py 的真实同步逻辑
+    pass
+finally:
+    release_lock()
+```
+
+### 11.6 lock 文件内容（服务端内部）
+
+服务端会在 `server.lock_dir` 下生成 lock 文件（内部实现细节，供排障参考）：
+
+- 文件名基于锁 key（如模块锁）
+- 内容包含 `owner`、过期时间、锁 key
+
+注意：
+
+- 这些文件由 `sync-server` 管理，不建议由外部程序直接修改。
+- 运维排障时可只读查看，不要手工覆盖写入。
+
+---
+
+## 12. 测试
 
 执行全量测试：
 
@@ -287,7 +397,7 @@ go test ./...
 
 ---
 
-## 12. 常见问题
+## 13. 常见问题
 
 ### 12.1 提示 `module is required`
 
@@ -307,7 +417,7 @@ go test ./...
 
 ---
 
-## 13. 兼容性说明
+## 14. 兼容性说明
 
 - 旧客户端（不传 `module`）不兼容当前接口语义
 - 建议所有调用统一升级到模块化请求
